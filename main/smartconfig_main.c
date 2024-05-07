@@ -13,6 +13,7 @@
 #include <cJSON.h>
 #include <lwip/apps/sntp.h>
 #include <esp_netif.h>
+#include <i2c.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -24,6 +25,8 @@
 #include "tcpip_adapter.h"
 #include "esp_smartconfig.h"
 #include "smartconfig_ack.h"
+#include "driver/i2c.h"
+#include "inc/oled.h"
 
 /* The examples use smartconfig type that you can set via project configuration menu.
 
@@ -35,6 +38,11 @@
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 #define MAX_HTTP_OUTPUT_BUFFER 2048
+// IIC
+#define I2C_EXAMPLE_MASTER_SCL_IO           14                /*!< gpio number for I2C master clock */
+#define I2C_EXAMPLE_MASTER_SDA_IO           2               /*!< gpio number for I2C master data  */
+#define I2C_EXAMPLE_MASTER_NUM              0        /*!< I2C port number for master dev */
+
 
 /* FreeRTOS event group to signal when we are connected & ready to make a request */
 static EventGroupHandle_t s_wifi_event_group;       // 两种连接方式用同一个事件组？
@@ -47,6 +55,7 @@ static const int ESPTOUCH_DONE_BIT = BIT1;
 static const char *TAG = "smartconfig_example";
 static int s_retry_num = 0;
 static uint8_t wifi_flag = 0;
+static u8g2_t u8g2;
 
 
 // declaration
@@ -286,7 +295,7 @@ static void wifi_clear(void) {
     nvs_flash_erase();
 }
 
-// date time
+// http
 static void text_get(void *pvParameters) {
 
 //02-1 定义需要的变量
@@ -349,6 +358,8 @@ static void text_get(void *pvParameters) {
                     cJSON *time = cJSON_GetObjectItem(root, "text");
 
                     printf("%s\n", time->valuestring);
+                    u8g2_ClearBuffer(&u8g2);
+                    draw(&u8g2, time->valuestring);
 
                 }
                     //如果不成功
@@ -367,7 +378,7 @@ static void text_get(void *pvParameters) {
     }
 
 }
-
+// date time
 static void initialize_sntp(void)
 {
     ESP_LOGI(TAG, "Initializing SNTP");
@@ -434,12 +445,35 @@ static void sntp_task(void *arg)
     }
 }
 
+// oled
+static esp_err_t i2c_example_master_init() {
+    int i2c_master_port = I2C_EXAMPLE_MASTER_NUM;
+    i2c_config_t conf;
+    conf.mode = I2C_MODE_MASTER;
+    conf.sda_io_num = I2C_EXAMPLE_MASTER_SDA_IO;
+    conf.sda_pullup_en = 1;
+    conf.scl_io_num = I2C_EXAMPLE_MASTER_SCL_IO;
+    conf.scl_pullup_en = 1;
+    conf.clk_stretch_tick = 300; // 300 ticks, Clock stretch is about 210us, you can make changes according to the actual situation.
+    ESP_ERROR_CHECK(i2c_driver_install(i2c_master_port, conf.mode));
+    ESP_ERROR_CHECK(i2c_param_config(i2c_master_port, &conf));
+    return ESP_OK;
+}
+
 
 void app_main() {
     ESP_ERROR_CHECK(nvs_flash_init());
-//    wifi_clear();
     wifi_sta_config_t wifi;
     wifi = read_wifi();
+
+    // oled
+    i2c_example_master_init();
+    u8g2_Setup_ssd1306_i2c_128x64_noname_f(&u8g2, U8G2_R0, u8x8_byte_sw_i2c, u8x8_gpio_and_delay);  // 初始化 u8g2 结构体
+    u8g2_InitDisplay(&u8g2); // 根据所选的芯片进行初始化工作，初始化完成后，显示器处于关闭状态
+    u8g2_SetPowerSave(&u8g2, 0); // 打开显示器
+    u8g2_ClearBuffer(&u8g2);
+    draw(&u8g2,"一碗面");
+
     if (wifi_config(wifi)) {
         printf("Connected to %s\n", wifi.ssid);
     } else {

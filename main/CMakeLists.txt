@@ -1,3 +1,3 @@
-set(COMPONENT_SRCS "smartconfig_main.c")
-
-register_component()
+FILE(GLOB_RECURSE main_source ./*.*)
+idf_component_register(SRCS ${main_source}
+        INCLUDE_DIRS "" "./u8g2/")
