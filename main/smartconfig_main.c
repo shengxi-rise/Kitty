@@ -14,6 +14,7 @@
 #include <lwip/apps/sntp.h>
 #include <esp_netif.h>
 #include <i2c.h>
+#include <mqtt_client.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -56,7 +57,14 @@ static const char *TAG = "smartconfig_example";
 static int s_retry_num = 0;
 static uint8_t wifi_flag = 0;
 static u8g2_t u8g2;
-
+const uint8_t cloudly[] = {
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0xFE, 0x00, 0x00, 0x00, 0xFF, 0x01, 0x00, 0x80, 0xFF, 0xFB, 0x00, 0x80, 0xFF, 0xFF, 0x03,
+        0xC0, 0xFF, 0xFF, 0x03, 0xC0, 0xFF, 0xFF, 0x07, 0xC0, 0xFF, 0xFF, 0x07, 0xF8, 0xFF, 0xFF, 0x1F, 0xFC, 0xFF,
+        0xFF, 0x3F, 0xFC, 0xFF, 0xFF, 0x3F, 0xFE, 0xFF, 0xFF, 0x7F, 0xFE, 0xFF, 0xFF, 0x7F, 0xFC, 0xFF, 0xFF, 0x3F,
+        0xFC, 0xFF, 0xFF, 0x3F, 0xF8, 0xFF, 0xFF, 0x1F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
 
 // declaration
 static void smartconfig_example_task(void *parm);
@@ -359,7 +367,7 @@ static void text_get(void *pvParameters) {
 
                     printf("%s\n", time->valuestring);
                     u8g2_ClearBuffer(&u8g2);
-                    draw(&u8g2, time->valuestring);
+                    draw(&u8g2, time->valuestring, cloudly);
 
                 }
                     //如果不成功
@@ -378,22 +386,21 @@ static void text_get(void *pvParameters) {
     }
 
 }
+
 // date time
-static void initialize_sntp(void)
-{
+static void initialize_sntp(void) {
     ESP_LOGI(TAG, "Initializing SNTP");
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, "pool.ntp.org");
+    sntp_setservername(0, "cn.pool.ntp.org");
     sntp_init();
 }
 
-static void obtain_time(void)
-{
+static void obtain_time(void) {
     initialize_sntp();
 
     // wait for time to be set
     time_t now = 0;
-    struct tm timeinfo = { 0 };
+    struct tm timeinfo = {0};
     int retry = 0;
     const int retry_count = 10;
 
@@ -405,8 +412,7 @@ static void obtain_time(void)
     }
 }
 
-static void sntp_task(void *arg)
-{
+static void sntp_task(void *arg) {
     time_t now;
     struct tm timeinfo;
     char strftime_buf[64];
@@ -436,14 +442,93 @@ static void sntp_task(void *arg)
         if (timeinfo.tm_year < (2016 - 1900)) {
             ESP_LOGE(TAG, "The current date/time error");
         } else {
-            strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
-            ESP_LOGI(TAG, "The current date/time in Shanghai is: %s", strftime_buf);
+            strftime(strftime_buf, sizeof(strftime_buf), "%T", &timeinfo);
+            ESP_LOGI(TAG, "%s", strftime_buf);
+            time_display(&u8g2, strftime_buf);
         }
 
         ESP_LOGI(TAG, "Free heap size: %d\n", esp_get_free_heap_size());    // 获取整个系统的可用空间
         vTaskDelay(1000 / portTICK_RATE_MS);
     }
 }
+
+// MQTT
+static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event) {
+    esp_mqtt_client_handle_t client = event->client;
+    int msg_id;
+    // your_context_t *context = event->context;
+    switch (event->event_id) {
+        case MQTT_EVENT_CONNECTED:
+            ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+            msg_id = esp_mqtt_client_publish(client, "/topic/qos1", "data_3", 0, 1, 0);
+            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
+
+//            msg_id = esp_mqtt_client_subscribe(client, "/k18mkCEjC96/ESP8266/user/get", 0);
+            msg_id = esp_mqtt_client_subscribe(client, "/sys/k18mkCEjC96/ESP8266/thing/event/property/post", 0);
+            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+            u8g2_ClearBuffer(&u8g2);
+            draw(&u8g2, "Welcome!", cloudly);
+
+            msg_id = esp_mqtt_client_unsubscribe(client, "/topic/qos1");
+            ESP_LOGI(TAG, "sent unsubscribe successful, msg_id=%d", msg_id);
+            break;
+        case MQTT_EVENT_DISCONNECTED:
+            ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
+            break;
+
+        case MQTT_EVENT_SUBSCRIBED:
+            ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
+            msg_id = esp_mqtt_client_publish(client, "/topic/qos0", "data", 0, 0, 0);
+            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
+            break;
+        case MQTT_EVENT_UNSUBSCRIBED:
+            ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
+            break;
+        case MQTT_EVENT_PUBLISHED:
+            ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
+            break;
+        case MQTT_EVENT_DATA:
+            ESP_LOGI(TAG, "MQTT_EVENT_DATA");
+            printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
+            printf("DATA=%.*s\r\n", event->data_len, event->data);      // 数据组合起来的，所以要算长度
+
+            char text[2048] = {0};
+            sprintf(text, "%.*s", event->data_len, event->data);
+//            {"id":1715336114143,"params":{"text":"你好"},"version":"1.0","method":"thing.event.property.post"}
+            cJSON *root = NULL;
+            root = cJSON_Parse(text);
+            cJSON *items = cJSON_GetObjectItem(root, "items");
+            cJSON *texts = cJSON_GetObjectItem(items, "text");
+            cJSON *value = cJSON_GetObjectItem(texts, "value");
+
+            printf("text:%s", value->valuestring);
+            u8g2_ClearBuffer(&u8g2);
+            draw(&u8g2, value->valuestring, cloudly);
+            break;
+        case MQTT_EVENT_ERROR:
+            ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
+            break;
+        default:
+            ESP_LOGI(TAG, "Other event id:%d", event->event_id);
+            break;
+    }
+    return ESP_OK;
+}
+
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
+    ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
+    mqtt_event_handler_cb(event_data);
+}
+
+static void mqtt_app_start(void) {
+    esp_mqtt_client_config_t mqtt_cfg = {
+        .uri = "",
+    };
+    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, client);
+    esp_mqtt_client_start(client);
+}
+
 
 // oled
 static esp_err_t i2c_example_master_init() {
@@ -472,7 +557,7 @@ void app_main() {
     u8g2_InitDisplay(&u8g2); // 根据所选的芯片进行初始化工作，初始化完成后，显示器处于关闭状态
     u8g2_SetPowerSave(&u8g2, 0); // 打开显示器
     u8g2_ClearBuffer(&u8g2);
-    draw(&u8g2,"一碗面");
+    draw(&u8g2, "Connecting......", cloudly);
 
     if (wifi_config(wifi)) {
         printf("Connected to %s\n", wifi.ssid);
@@ -480,9 +565,11 @@ void app_main() {
         initialise_wifi();      // smartconfig wifi
     }
     if (wifi_flag) {
+        u8g2_ClearBuffer(&u8g2);
+        draw(&u8g2, "Connect!", cloudly);
         xTaskCreate(&sntp_task, "sntp_task", 8192, NULL, 5, NULL);
-        xTaskCreate(&text_get, "text_get", 8192, NULL, 6, NULL);
-
+//        xTaskCreate(&text_get, "text_get", 8192, NULL, 6, NULL);
+        mqtt_app_start();
     }
 
 }
